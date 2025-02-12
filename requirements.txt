@@ -6,7 +6,7 @@ faiss-cpu
 python-dotenv
 nest_asyncio
 numpy
-
+langchain
 
 # cd C:\russia_base_bot
 # python -m venv venv 
