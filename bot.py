@@ -217,7 +217,7 @@ async def retrieve_context(query: str, k: int = TOP_K) -> str:
     logger.info("Top-%d чанки:\n%s", k, "\n-----\n".join(result_chunks))
     return "\n".join(result_chunks)
 
-# --- Генерация ответа через GPT-4 ---
+# --- Генерация ответа через GPT-4o-mini ---
 async def generate_gpt_response(prompt: str) -> str:
     # Если вопрос про Константина Константинова
     if "константин константинов" in prompt.lower():
@@ -231,11 +231,19 @@ async def generate_gpt_response(prompt: str) -> str:
         context_text = await retrieve_context(prompt, k=TOP_K)
         full_prompt = f"Используй информацию из базы знаний:\n{context_text}\n\nОтветь на запрос: {prompt}"
     
-    logger.info("Полный промпт GPT-4:\n%s", full_prompt)
+    logger.info("Полный промпт GPT-4o-mini:\n%s", full_prompt)
+
+    # Добавляем историю диалога в промпт
+    if conversation_history:
+        history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in conversation_history])
+        full_prompt = f"{history_prompt}\n\n{full_prompt}"
 
     try:
+        # Имитируем задержку для более естественного общения
+        await asyncio.sleep(1)
+
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
@@ -253,38 +261,13 @@ async def generate_gpt_response(prompt: str) -> str:
             max_tokens=2000,
         )
         text = response.choices[0].message["content"].strip()
-        logger.info("Ответ от GPT-4:\n%s", text)
+        logger.info("Ответ от GPT-4o-mini:\n%s", text)
         return text
     except Exception as e:
         logger.error(f"Ошибка вызова OpenAI: {e}")
         return "Извините, произошла ошибка при формировании ответа."
 
 # --- Обработчики команд и сообщений ---
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    conversation_history.clear()
-    logger.info(f"Пользователь {user.username} ({user.id}) ввёл /start.")
-    welcome_text = (
-        "Здравствуйте!\n\n"
-        "Добро пожаловать в бот «Опора России». "
-        "Здесь вы можете узнать информацию о мероприятиях, услугах и преимуществах членства.\n\n"
-        "Доступные команды:\n"
-        "/start — запуск бота\n"
-        "/help — справка\n"
-        "/stop — остановить бота (только админ)\n"
-        "/getid — узнать свой ID\n\n"
-        "Выберите интересующую опцию ниже:"
-    )
-    keyboard = [
-        [InlineKeyboardButton("Актуальные мероприятия", callback_data="events")],
-        [InlineKeyboardButton("Преимущества членства", callback_data="membership")],
-        [InlineKeyboardButton("Показать руководителей", callback_data="show_photos")],
-        [InlineKeyboardButton("Получить помощь", callback_data="help")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
-    conversation_history.append({"role": "system", "content": welcome_text})
 
 async def help_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -314,6 +297,120 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("🔚 До свидания!")
     conversation_history.append({"role": "system", "content": "Диалог завершён."})
     await context.application.stop()
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    conversation_history.clear()
+    logger.info(f"Пользователь {user.username} ({user.id}) ввёл /start.")
+    
+    # Начальное приветствие и вопрос о членстве
+    welcome_text = (
+        "Здравствуйте! Добро пожаловать в бот «Опора России». "
+        "Позвольте задать Вам вопрос: Вы уже член «Опоры России»?"
+    )
+    
+    await update.message.reply_text(welcome_text)
+    conversation_history.append({"role": "system", "content": welcome_text})
+    
+    # Устанавливаем состояние диалога для ожидания ответа на вопрос о членстве
+    context.user_data["awaiting_membership_response"] = True
+
+async def handle_membership_response(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    user_text = update.message.text.strip().lower()
+    logger.info(f"Пользователь {user.username} ({user.id}) ответил на вопрос о членстве: {user_text}")
+    
+    # Положительные ответы
+    positive_responses = ["да", "состою", "являюсь", "да, состою", "да, являюсь"]
+    
+    # Отрицательные ответы
+    negative_responses = ["нет", "еще нет", "пока не член", "не состою", "не являюсь"]
+    
+    if any(response in user_text for response in positive_responses):
+        # Если ответ положительный, задаем вопрос о дате оплаты
+        await update.message.reply_text("А как давно Вы оплатили членский взнос?")
+        context.user_data["awaiting_payment_date"] = True
+        context.user_data["awaiting_membership_response"] = False
+    elif any(response in user_text for response in negative_responses):
+        # Если ответ отрицательный, выводим стандартную стартовую таблицу
+        await update.message.reply_text(
+            "Спасибо за ответ! Вот что я могу вам предложить:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Актуальные мероприятия", callback_data="events")],
+                [InlineKeyboardButton("Преимущества членства", callback_data="membership")],
+                [InlineKeyboardButton("Показать руководителей", callback_data="show_photos")],
+                [InlineKeyboardButton("Получить помощь", callback_data="help")]
+            ])
+        )
+        context.user_data["awaiting_membership_response"] = False
+    else:
+        # Если ответ не распознан, просим уточнить
+        await update.message.reply_text("Пожалуйста, уточните, являетесь ли вы членом «Опоры России»?")
+        context.user_data["awaiting_membership_response"] = True
+
+async def handle_payment_date_response(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    user_text = update.message.text.strip().lower()
+    logger.info(f"Пользователь {user.username} ({user.id}) ответил на вопрос о дате оплаты: {user_text}")
+    
+    # Попытка извлечь дату из ответа пользователя
+    date_patterns = [
+        r"\d{1,2}\.\d{1,2}\.\d{4}",  # DD.MM.YYYY
+        r"\d{1,2}\.\d{1,2}\.\d{2}",  # DD.MM.YY
+        r"\d{1,2}\s[а-я]+\s\d{4}",   # DD месяц YYYY
+    ]
+    
+    found_date = None
+    for pattern in date_patterns:
+        match = re.search(pattern, user_text)
+        if match:
+            found_date = match.group(0)
+            break
+    
+    if found_date:
+        # Если дата найдена, прибавляем год и выводим напоминание
+        try:
+            from datetime import datetime, timedelta
+            date_obj = datetime.strptime(found_date, "%d.%m.%Y") if "." in found_date else datetime.strptime(found_date, "%d %B %Y")
+            next_payment_date = date_obj + timedelta(days=365)
+            next_payment_date_str = next_payment_date.strftime("%d.%m.%Y")
+            await update.message.reply_text(f"Напоминаю, дата следующей оплаты: {next_payment_date_str}")
+        except Exception as e:
+            logger.error(f"Ошибка при обработке даты: {e}")
+            await update.message.reply_text("Рекомендую вспомнить конкретную дату предыдущей оплаты и напоминаю, что размер членского взноса составляет 10 000 руб. в год.")
+    else:
+        # Если дата не найдена, выводим общий ответ
+        await update.message.reply_text("Рекомендую вспомнить конкретную дату предыдущей оплаты и напоминаю, что размер членского взноса составляет 10 000 руб. в год.")
+    
+    context.user_data["awaiting_payment_date"] = False
+
+# Модифицируем обработчик текстовых сообщений
+async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message and update.message.text:
+        user_text = update.message.text.strip()
+        logger.info(f"Текстовое сообщение: {user_text}")
+        
+        if user_text.startswith("/"):
+            return  # пропускаем команды
+        
+        # Проверяем, ожидаем ли мы ответ на вопрос о членстве
+        if context.user_data.get("awaiting_membership_response", False):
+            await handle_membership_response(update, context)
+            return
+        
+        # Проверяем, ожидаем ли мы ответ на вопрос о дате оплаты
+        if context.user_data.get("awaiting_payment_date", False):
+            await handle_payment_date_response(update, context)
+            return
+        
+        # Если это обычное текстовое сообщение, обрабатываем его как раньше
+        conversation_history.append({"role": "user", "content": user_text})
+        response = await generate_gpt_response(user_text)
+        await update.message.reply_text(response)
+        conversation_history.append({"role": "assistant", "content": response})
+    else:
+        logger.info("Нет текстового сообщения.")
 
 # Пример обработчика для голосовых/аудио
 async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -398,20 +495,6 @@ async def video_note_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Ошибка при обработке видео заметки: {e}")
         await update.message.reply_text("Произошла ошибка при обработке видео.")
 
-# Обработчик текстовых сообщений
-async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message and update.message.text:
-        user_text = update.message.text.strip()
-        logger.info(f"Текстовое сообщение: {user_text}")
-        if user_text.startswith("/"):
-            return  # пропускаем команды
-        conversation_history.append({"role": "user", "content": user_text})
-        response = await generate_gpt_response(user_text)
-        await update.message.reply_text(response)
-        conversation_history.append({"role": "assistant", "content": response})
-    else:
-        logger.info("Нет текстового сообщения.")
-
 # Обработчик inline-кнопок
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -491,3 +574,25 @@ if __name__ == '__main__':
         asyncio.run(main())
     finally:
         loop.close = original_close
+
+    
+   
+       
+   
+   
+
+
+ 
+ 
+     
+      
+     
+
+     
+    
+
+  
+ 
+    
+
+   
