@@ -1,11 +1,9 @@
 python-telegram-bot
 openai
-openai-whisper
 pydub
 faiss-cpu
 python-dotenv
 nest_asyncio
-numpy
 langchain
 
 # cd C:\russia_base_bot
